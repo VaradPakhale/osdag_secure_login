@@ -1,0 +1,30 @@
+{
+  "name": "osdag-secure-login-custom-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Custom backend (Express + PostgreSQL + argon2id) for the Osdag secure-login screening task",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "migrate": "node scripts/migrate.js",
+    "seed": "node scripts/seed.js",
+    "setup": "npm run migrate && npm run seed"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.0.2",
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "jpeg-js": "^0.4.4",
+    "jszip": "^3.10.1",
+    "pdf-lib": "^1.17.1",
+    "pngjs": "^7.0.0"
+  }
+}

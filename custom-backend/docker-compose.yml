@@ -1,0 +1,31 @@
+# Convenience only. The app talks to whatever DATABASE_URL points at — this
+# file just saves a reviewer from installing Postgres. Nothing in src/ or
+# scripts/ knows this file exists; an existing Postgres works exactly as well.
+#
+#   docker compose up -d          then   npm run setup && npm run dev
+#
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: osdag-secure-login-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: osdag
+      POSTGRES_PASSWORD: osdag_dev_password
+      POSTGRES_DB: osdag_auth
+    ports:
+      # Host 5432. If something already owns that port, change the LEFT side
+      # here and the port in DATABASE_URL to match.
+      - '5432:5432'
+    volumes:
+      - osdag-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # `npm run setup` immediately after `up -d` will fail without this —
+      # the container accepts TCP before Postgres is ready for queries.
+      test: ['CMD-SHELL', 'pg_isready -U osdag -d osdag_auth']
+      interval: 3s
+      timeout: 5s
+      retries: 15
+
+volumes:
+  osdag-pgdata:
