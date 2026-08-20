@@ -17,20 +17,49 @@ design.** Do not spend effort on styling.
 
 ---
 
----
-
 ## Locked decisions
 
-> Fill the first entry in after Prompt 0. Once a decision is recorded here, it is settled —
-> do not revisit it in later sessions.
+> Settled. Do not revisit in later sessions. Full reasoning lives in `DECISIONS.md`.
 
-- **Auth mechanism:** _TBD after Prompt 0 — decided by what `web/index.html` actually sends._
-- **Custom backend stack:** Express + PostgreSQL + argon2
-- **Database connection:** read from a `DATABASE_URL` environment variable, never hardcoded.
-  A `docker-compose.yml` is provided for reviewer convenience, but the app depends only on
-  a connection string, not on any particular way of hosting Postgres.
-- **Appwrite approach:** a thin adapter exposing routes identical to the custom backend, so
-  one unmodified client serves both implementations.
+- **Credential mechanism (ADR-0001):** opaque Bearer token, **not a JWT**. 32 CSPRNG bytes,
+  base64url-encoded. The `sessions` table stores **SHA-256(token)** only, never the token
+  itself. Absolute 30-minute expiry, no sliding renewal. Cookie mode is a thin alias that
+  resolves to the *same* session row — it is not a second design.
+- **Custom backend stack:** Express + PostgreSQL + argon2id
+- **Database connection:** read from `DATABASE_URL`, never hardcoded. A `docker-compose.yml`
+  is provided as a reviewer convenience, but the app depends only on a connection string.
+- **Appwrite approach (ADR-0002):** server-side facade exposing routes identical to the
+  custom backend. Admin API key is used for provisioning and registration only; all data
+  access is scoped through the user's own Appwrite session, so Appwrite's permission model
+  enforces isolation. `index.html` stays byte-identical.
+
+---
+
+## Client-imposed constraints (from `API_CONTRACT.md` — non-negotiable)
+
+1. **Every response body on every `request()` route must be valid JSON.** The client calls
+   `res.json()` and falls back to `res.text()` on the same response (index.html:118) — the
+   fallback throws, because `json()` has already consumed the body. A non-JSON response makes
+   the output pane silently freeze on the previous result. This requires custom handlers for
+   the rate limiter's 429, the framework's default HTML 404, and its default HTML 500 page.
+   No route may ever emit HTML or plain text.
+2. **Listen on `http://localhost:3000`, routes mounted at root.** `/register`, not `/api/register`.
+3. **Answer `OPTIONS` on every route.** `Authorization` forces a preflight even on GET.
+   `Access-Control-Allow-Methods: GET, POST, OPTIONS` and
+   `Access-Control-Allow-Headers: Authorization, Content-Type`.
+   **`OPTIONS` must never consume rate-limit budget.**
+4. **`POST /login` returns `token` at the top level** of the JSON body. This is the only field
+   the client parses (index.html:142-144). Nesting it breaks the entire page.
+5. **`/register` and `/login` must ignore any inbound `Authorization` header.** The client
+   sends a stale one after any successful login.
+6. **`POST /logout` accepts a POST with no body and no `Content-Type`** (index.html:149).
+7. **File IDs are opaque `text`, matching the seed (`file_001`).** The client's File ID field
+   defaults to `1` (index.html:79). With integer or UUID columns that is a Postgres cast error
+   — a 500 where R3.3 demands a 404, and per constraint 1 a 500 freezes the client.
+8. **Rate limiting is keyed on email, not IP.** All evaluation traffic shares `::1`; an IP key
+   means probing Alice locks out Bob and Carol. A looser per-IP limit may sit alongside it.
+9. **`index.html` is never modified.** Not for the custom backend, not for Appwrite. Selecting
+   a radio button is usage, not modification.
 
 ---
 
@@ -51,28 +80,14 @@ design.** Do not spend effort on styling.
 
 ---
 
-## The client is the source of truth for the API contract
+## The contract is settled
 
-Before writing any server code, read `web/index.html` and `web/mock-api.js` and extract:
+`API_CONTRACT.md` is written and is **binding**. Both backends conform to it exactly.
+Re-read it before each phase. Do not re-derive the contract from the client; if something in
+it looks wrong, raise it rather than silently diverging.
 
-- every route path and HTTP method the client calls
-- exact request body shapes
-- exact response body shapes the client destructures
-- how the credential is transmitted (`Authorization: Bearer …` vs. cookie)
-- where the client stores the credential (localStorage / sessionStorage / cookie)
-- which status codes the client branches on
-
-Write this into `API_CONTRACT.md` **first**. Both backends implement that identical
-contract, so the same unmodified `index.html` works against either one.
-
-**Decision rule for the auth mechanism:** match whatever the client already does.
-- If the client sends `Authorization: Bearer` → JWT, *plus* a server-side session/`jti`
-  table so logout genuinely revokes (a stateless JWT alone does not satisfy the
-  "invalidate server-side" requirement).
-- If the client relies on cookies → httpOnly, `SameSite=Lax`, `Secure` in production,
-  with an opaque session ID stored server-side.
-
-Whichever you pick, the README must justify it.
+Open questions from the contract analysis are tracked as numbered ADRs in `DECISIONS.md`.
+An ADR must be resolved and written down *before* code depending on it is written.
 
 ---
 
@@ -83,12 +98,12 @@ Whichever you pick, the README must justify it.
 | Password storage | argon2id (preferred) or bcrypt cost ≥ 12. Never SHA/MD5, never reversible encryption. |
 | Failed login response | One generic message for both "no such email" and "wrong password". Never reveal registration status. |
 | User enumeration via timing | Always run a hash comparison against a dummy hash when the email doesn't exist, so both paths take comparable time. |
-| Registration enumeration | Registering an existing email must not leak that it exists any more than the flow strictly requires — document the tradeoff chosen in `DECISIONS.md`. |
+| Registration enumeration | `409` on duplicate email, matching the mock and the evaluator's expectation. R5.2 governs *login* only. The leak is deliberate, documented in ADR-0004, and the fix belongs in the README's "what I'd improve" section. |
 | Logout | Deletes/revokes the session server-side. Presenting the old token afterwards returns 401. Prove this in a test. |
 | `GET /me` | Derives identity **only** from the validated credential. Any `id`/`email`/`user_id` supplied in the URL, query string, or body is ignored entirely. |
 | `GET /files` | Filters by the authenticated user's ID inside the query itself — never fetch-then-filter in application code. |
 | `GET /files/:id` | See the status code policy below. This is the sharpest single discriminator in the task. |
-| Rate limiting | Per-IP limit on the login route **and** per-account lockout after repeated failures. Both configurable via env. |
+| Rate limiting | Primary key is **email**, with a looser secondary key on IP. `OPTIONS` exempt. Thresholds env-configurable. The README must document how an evaluator resets a lockout. |
 | Consistent validation | One auth middleware, applied to every protected route. No route may be individually exempted by accident. |
 
 ### Status code policy — be exact
@@ -99,6 +114,10 @@ Whichever you pick, the README must justify it.
 | Valid credential, file exists but belongs to another user | `403` |
 | Valid credential, file ID does not exist at all | `404` |
 | Valid credential, own file | `200` |
+| Valid credential, file ID malformed or unparseable | `404` — never 500 |
+| Login with a missing or malformed field | `401`, matching the mock |
+| Registration with an already-registered email | `409` (ADR-0004) |
+| Rate limit exceeded | `429` **with a JSON body** |
 
 The 403/404 distinction is explicitly called out in the task text. Most submissions
 collapse these into one response. Do not.
