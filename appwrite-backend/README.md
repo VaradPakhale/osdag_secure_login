@@ -6,17 +6,59 @@ Postgres. The same unmodified `web/index.html` works against both: change the Ba
 
 Design rationale is in [`../DECISIONS.md`](../DECISIONS.md) — ADR-0002 (why a facade rather than a
 browser adapter), ADR-0014 (session secret rather than JWT), ADR-0015 (encryption at rest),
-ADR-0016 (where the facade's own state lives). This file is setup, operation, and the
-Appwrite-versus-us split.
+ADR-0016 (where the facade's own state lives), ADR-0017 (Cloud vs self-hosted). This file is setup,
+operation, and the Appwrite-versus-us split.
 
 ## Setup
 
-Requires Node ≥ 20 and an Appwrite instance — self-hosted or Cloud.
+Requires Node ≥ 20 and an Appwrite project. **Appwrite Cloud is the default** — nothing to install.
+Self-hosted works identically and needs no account. Why both are supported, and why self-hosting
+was never non-compliant with "a managed backend", is ADR-0017.
 
-### Against a local Appwrite
+### Path A — Appwrite Cloud (recommended, about two minutes)
+
+In the console at <https://cloud.appwrite.io>:
+
+1. **Create a project.** Note its **Project ID** and the **API Endpoint** shown in Settings. Cloud
+   is regional, so yours may be `https://fra.cloud.appwrite.io/v1` rather than the generic host —
+   use exactly what the console shows.
+2. **Create an API key**: Overview → Integrations → API Keys → Create API key.
+   **The console selects no scopes by default.** Enable all of:
+
+   ```
+   users.read users.write
+   databases.read databases.write
+   collections.read collections.write
+   attributes.read attributes.write
+   indexes.read indexes.write
+   documents.read documents.write
+   files.read files.write
+   buckets.read buckets.write
+   sessions.write
+   ```
+
+   A scope-less key is the most likely failure on this path; `npm run provision` detects it and
+   prints this list rather than surfacing a bare 401. The key secret is shown once.
+
+Then:
 
 ```bash
-# 1. Start Appwrite (once). ~23 containers, a few GB.
+cd appwrite-backend
+npm install
+cp .env.example .env     # paste endpoint, project id, API key; generate
+                         # SESSION_ENCRYPTION_KEY as the file explains
+npm run setup            # provision (schema, permissions, bucket) + seed
+npm run dev              # http://localhost:3001
+```
+
+### Path B — self-hosted (no account required)
+
+**Know the cost before starting.** Measured on this machine: **23 containers, ~1.4 GB RAM at
+idle, ~7.5 GB of images to download on first run.** Budget **10–20 minutes** for that download
+depending on connection; it is one-off and it is the slow part. Allow roughly **4 GB of free RAM**
+for Docker.
+
+```bash
 mkdir appwrite && cd appwrite
 docker run -it --rm \
   --volume /var/run/docker.sock:/var/run/docker.sock \
@@ -24,31 +66,33 @@ docker run -it --rm \
   --entrypoint="install" appwrite/appwrite:1.6.2
 # accept the defaults; it listens on http://localhost
 
-# 2. Back in this folder
 cd ../appwrite-backend
 npm install
-npm run bootstrap      # console account + team + project + API key -> .env.local
-npm run setup          # provision (schema, permissions, bucket) + seed
-npm run dev            # http://localhost:3001
+npm run bootstrap        # console account + team + project + API key + encryption key,
+                         # written to .env.local — nothing to copy by hand
+npm run setup
+npm run dev
 ```
 
-`npm run bootstrap` exists so a reviewer never has to click through the console. It writes
-`.env.local` (gitignored) with a real project id and API key. It is idempotent, except that it
-mints a fresh API key each run — Appwrite reveals a key's secret only at creation.
+`npm run bootstrap` exists so this path needs no console clicking at all. It is idempotent, except
+that it mints a fresh API key each run — Appwrite reveals a key secret only at creation.
 
-### Against Appwrite Cloud
+> **Switching from self-hosted to Cloud? Delete `.env.local` first.** Precedence is
+> **exported environment → `.env.local` → `.env`**, so a leftover `.env.local` keeps pointing the
+> facade at your local instance. The facade prints its endpoint and project id on startup; check
+> that line if something looks wrong.
 
-Skip `bootstrap`. Create a project and an API key in the console, then:
+### Both paths end in the same place
 
-```bash
-cp .env.example .env       # fill in APPWRITE_ENDPOINT / PROJECT_ID / API_KEY
-                           # and generate SESSION_ENCRYPTION_KEY as the file explains
-npm install && npm run setup && npm run dev
+```
+Cloud:        console (manual)  --+
+                                  +-->  npm run provision  ->  npm run seed  ->  npm run dev
+Self-hosted:  npm run bootstrap --+          (one script)        (one script)
 ```
 
-The API key needs the scopes listed in `scripts/bootstrap-project.js` (`users.*`, `databases.*`,
-`collections.*`, `attributes.*`, `indexes.*`, `documents.*`, `files.*`, `buckets.*`,
-`sessions.write`).
+Exactly one provisioning script and one seed script, shared verbatim, neither branching on the
+target. The paths differ only in how a project id and API key are obtained. That is the drift
+mitigation, and it is structural rather than a promise to remember (ADR-0017).
 
 ## Running both backends at once
 
@@ -73,11 +117,11 @@ all three is `Password123!`.
 
 **On Appwrite id constraints.** Appwrite ids must match `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,35}$` — max
 36 characters, no leading special character. `file_001` satisfies this as-is, so **the ids are used
-verbatim with no mapping**, for both the documents and the storage files. Confirmed by the
-verification run: `GET /files/file_001` returns 200 on both backends.
+verbatim with no mapping**, for both documents and storage files. Confirmed by the verification
+run: `GET /files/file_001` returns 200 on both backends.
 
 **User ids do differ.** Appwrite assigns its own `$id` at account creation and it is not ours to
-choose, so `usr_001` does not carry over — you will see ids like `6a8748bd00061addb71d`. Nothing
+choose, so `usr_001` does not carry over — you will see ids like `6a87eba9000bf412a608`. Nothing
 depends on it: the profile is looked up from the session, never by id.
 
 ## Locked out? (R5.3)
@@ -94,9 +138,9 @@ Unlike `npm run seed`, this leaves users and files untouched, so it is safe mid-
 
 ## Where Appwrite's own rate limits sit relative to ours
 
-Appwrite applies its own abuse limits to auth endpoints — on self-hosted 1.6.x the account
-endpoints are limited per IP+endpoint over a rolling window, configurable only through
-`_APP_LIMIT_*` environment variables on the Appwrite containers.
+Appwrite applies its own abuse limits to auth endpoints, per IP and endpoint over a rolling window
+— on self-hosted these are tunable through `_APP_LIMIT_*` on the containers; on Cloud they are
+fixed.
 
 **Ours fire first and are the ones that satisfy R5.3**, for three reasons: Appwrite's are keyed on
 IP, which is useless in a review where every account shares `::1` (ADR-0006); they are not
@@ -104,10 +148,13 @@ configurable from this codebase; and they return Appwrite's error shape rather t
 `{"error": "..."}`. Appwrite's limits remain underneath as a backstop we do not rely on — and if
 one ever did fire, the translation layer maps it to our `429` body rather than leaking Appwrite's.
 
+Our limiter trips at 10 failures per 15 minutes, comfortably inside Appwrite's own thresholds on
+either deployment, so this behaves identically on Cloud and self-hosted.
+
 ## What Appwrite enforces versus what we enforce
 
-This is the honest split, verified by talking to Appwrite **directly with a user's own session**,
-bypassing the facade entirely.
+The honest split, verified by talking to Appwrite **directly with a user's own session**, bypassing
+the facade entirely.
 
 ### Appwrite enforces (we wrote no check)
 
@@ -125,7 +172,7 @@ bypassing the facade entirely.
 
 | Guarantee | Why Appwrite does not cover it |
 |---|---|
-| **403 vs 404 for another user's file (R3.3)** | Appwrite answers **404 for both** — deliberately, so as not to disclose existence. R3.3 requires them to be **distinct**, so `resolveOwnedFile()` does an explicit existence probe with the admin key after the user-scoped read misses. That probe selects no user data, only whether the id exists. **This is the single most important row in this table**: the one isolation-adjacent behaviour the platform actively works against. |
+| **403 vs 404 for another user's file (R3.3)** | Appwrite answers **404 for both** — deliberately, so as not to disclose existence. R3.3 requires them **distinct**, so `resolveOwnedFile()` does an explicit existence probe with the admin key after the user-scoped read misses. That probe selects no user data, only whether the id exists. **This is the single most important row in this table**: the one isolation-adjacent behaviour the platform actively works against. |
 | **Rate limiting / lockout (R5.3)** | Appwrite's limits are IP-keyed and not configurable from here. Ours are email-keyed. See above. |
 | **Generic login error (R5.2)** | Appwrite returns distinguishable errors (`user_not_found` vs `user_invalid_credentials`). The translation layer collapses every credential failure to one identical `401` body. |
 | **409 on duplicate registration (ADR-0004)** | Appwrite's own code/type is mapped to our contract's status and body. |
@@ -157,7 +204,7 @@ above, which reads no fields.
 ## Layout
 
 ```
-scripts/bootstrap-project.js  console account + team + project + API key (local only)
+scripts/bootstrap-project.js  console account + team + project + API key (SELF-HOSTED only)
 scripts/provision.js          idempotent: database, collections, attributes, indexes, bucket
 scripts/seed.js               the 3 users + 6 files; reuses custom-backend's file generators
 scripts/reset-lockout.js      the documented lockout escape hatch
@@ -172,6 +219,9 @@ src/routes/                   auth.js, me.js, files.js
 
 ## Notes
 
+- **`SESSION_ENCRYPTION_KEY` is required with no fallback anywhere in the code.** The server
+  refuses to start without it, and rejects a key that does not decode to exactly 32 bytes — the
+  same fail-fast treatment `DATABASE_URL` gets in `custom-backend`.
 - **The sample-file generators are imported from `custom-backend`**, not copied
   (`scripts/lib/sample-files.js`). One definition, no drift — which is what lets both backends
   serve byte-identical files.

@@ -48,7 +48,22 @@ async function waitForAttributes(collectionId, keys, timeoutMs = 30_000) {
   throw new Error(`attributes on ${collectionId} not available within ${timeoutMs}ms`);
 }
 
+/**
+ * Cloud and self-hosted differ ONLY in how you obtain a project id and API key —
+ * Cloud has no API for creating a project, so that is done in the console, while
+ * self-hosted can script it via `npm run bootstrap`. From this point on the two
+ * paths are the same code, which is the entire drift mitigation: there is one
+ * provisioning script, not two. [ADR-0017]
+ */
+function describeTarget() {
+  const host = config.appwrite.endpoint;
+  const isCloud = /(^|\.)cloud\.appwrite\.io/.test(host);
+  return { isCloud, label: isCloud ? 'Appwrite Cloud' : 'self-hosted Appwrite' };
+}
+
 async function main() {
+  const { label } = describeTarget();
+  console.log(`[provision] target: ${label}`);
   console.log(`[provision] ${config.appwrite.endpoint} project=${config.appwrite.projectId}`);
 
   // --- database ------------------------------------------------------------
@@ -164,5 +179,28 @@ async function main() {
 
 main().catch((err) => {
   console.error('[provision] FAILED:', err.message);
+
+  // The overwhelmingly common Cloud failure is an API key created without the
+  // scopes this needs — the console does not select them by default. Say so,
+  // rather than leaving a bare 401 to be interpreted.
+  if (/401|unauthorized|missing scopes?/i.test(err.message)) {
+    console.error('');
+    console.error('[provision] That looks like an API key scope problem.');
+    console.error('[provision] In the Appwrite console: Overview -> Integrations -> API Keys,');
+    console.error('[provision] edit your key and enable these scopes:');
+    console.error('[provision]   users.read users.write databases.read databases.write');
+    console.error('[provision]   collections.read collections.write attributes.read attributes.write');
+    console.error('[provision]   indexes.read indexes.write documents.read documents.write');
+    console.error('[provision]   files.read files.write buckets.read buckets.write sessions.write');
+  }
+
+  if (/fetch failed|ENOTFOUND|ECONNREFUSED/i.test(err.message)) {
+    console.error('');
+    console.error(`[provision] Could not reach ${config.appwrite.endpoint}`);
+    console.error('[provision] Cloud: check APPWRITE_ENDPOINT matches the region shown in your');
+    console.error('[provision]        console (e.g. https://fra.cloud.appwrite.io/v1).');
+    console.error('[provision] Self-hosted: is the stack up? `docker ps | grep appwrite`');
+  }
+
   process.exit(1);
 });

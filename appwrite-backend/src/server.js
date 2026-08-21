@@ -16,11 +16,8 @@ try {
   process.exit(1);
 }
 
-if (!config.sessionEncryptionKey) {
-  console.error('[startup] SESSION_ENCRYPTION_KEY is not set — refusing to store');
-  console.error('[startup] Appwrite session secrets in plaintext. See .env.example.');
-  process.exit(1);
-}
+// SESSION_ENCRYPTION_KEY is validated in config.js (required, 32 bytes, no
+// fallback), so an invalid or absent key fails before we reach this line. [ADR-0015]
 
 const purgeTimer = setInterval(() => {
   purgeExpiredSessions().catch((err) =>

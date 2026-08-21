@@ -47,19 +47,9 @@ function shortId(token) {
 // reasoning that makes custom-backend store only sha256(token) — except here
 // we must be able to USE the secret, so it is encrypted rather than hashed.
 function encryptionKey() {
-  const raw = config.sessionEncryptionKey;
-  if (!raw) {
-    throw new Error(
-      'SESSION_ENCRYPTION_KEY is not set — refusing to store Appwrite session ' +
-        'secrets in plaintext. Generate one with: ' +
-        'node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"'
-    );
-  }
-  const key = Buffer.from(raw, 'base64');
-  if (key.length !== 32) {
-    throw new Error(`SESSION_ENCRYPTION_KEY must decode to 32 bytes, got ${key.length}`);
-  }
-  return key;
+  // config.js requires this and validates its length at startup — no fallback
+  // exists anywhere, so by the time we get here it is a real 32-byte key.
+  return Buffer.from(config.sessionEncryptionKey, 'base64');
 }
 
 function encrypt(plaintext) {
