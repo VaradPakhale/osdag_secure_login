@@ -1,7 +1,5 @@
 # Secure Login System with User Details & File Access
 
-FOSSEE / Osdag (IIT Bombay) — Autumn Internship 2026 screening task.
-
 Registration, login, logout, a protected profile route, and per-user file access —
 **implemented twice**, against two different backends, behind one identical HTTP contract:
 
