@@ -15,6 +15,10 @@ Requires Node ≥ 20 and an Appwrite project. **Appwrite Cloud is the default** 
 Self-hosted works identically and needs no account. Why both are supported, and why self-hosting
 was never non-compliant with "a managed backend", is ADR-0017.
 
+Both paths have been run end to end against a real Appwrite instance, Cloud included — provision,
+seed, and the full flow through the unmodified `web/index.html`. ADR-0017 records exactly what was
+observed and what was not (one region, one project, no load testing).
+
 ### Path A — Appwrite Cloud (recommended, about two minutes)
 
 In the console at <https://cloud.appwrite.io>:

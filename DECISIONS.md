@@ -1141,39 +1141,76 @@ with no account at all, which is worth preserving.
 
 ### What differs behaviourally between the two
 
-For the seven routes this facade exposes: **nothing that we could detect.** The same code, the same
-provisioning script and the same seed run against either, and the same 25-check matrix returns
-identical status codes.
+For the seven routes this facade exposes: **nothing detectable.** The same code, the same
+provisioning script and the same seed run against either, and the same checks return identical
+status codes.
 
-How that was verified, in the order it happened — the last bullet is the one that actually settles
-it, and the first two are recorded because they were what the claim rested on before it:
+**This is now observed, not inferred.** An earlier draft of this ADR argued the point from
+Appwrite's API compatibility, because no Cloud account was available at the time. That reasoning
+has been replaced by two independent runs against a real Cloud project on the **sgp** region
+(`https://sgp.cloud.appwrite.io/v1`).
 
-- **Endpoint reachability and TLS** were checked directly against Cloud — `cloud.appwrite.io`,
-  `fra.cloud.appwrite.io` and `nyc.cloud.appwrite.io` all answer `/v1/health` with Appwrite's JSON
-  `401` and a clean certificate chain. That confirms the default endpoint value and the regional
-  form are correct.
-- **The Cloud code path** — credentials supplied by hand in `.env`, no bootstrap artifacts present,
-  a fresh unprovisioned project — was run end to end against a real Appwrite server: provision,
-  seed, all 25 checks, rate limiter, and the direct isolation probe.
-- **Appwrite Cloud itself was subsequently exercised, end to end.** An earlier draft of this ADR
-  recorded that it had not been, because no Cloud account was available at the time. Once real
-  Cloud credentials were in place — a project on the **sgp** region,
-  `https://sgp.cloud.appwrite.io/v1` — the whole verification was re-run against the hosted
-  service. All of the following is against real Cloud, not self-hosted:
+#### 1. Automated, via the facade and the SDK
 
-  - the 25-check matrix returned the same status codes as self-hosted and as `custom-backend`;
-  - the rate limiter tripped at attempt 11 with our JSON `429` and `Retry-After: 887`; a locked
-    address plus the *correct* password still returned `429`, another address logged in `200`
-    from the same IP, and `npm run reset-lockout` restored access;
-  - the direct isolation probe (facade bypassed, querying Appwrite with each user's own session)
-    showed Alice and Bob each seeing **2 of 2** documents against **6** for the admin key, with
-    cross-user document reads refused as `document_not_found` and file bytes as
-    `storage_file_not_found`;
-  - all six downloaded files were **byte-identical** to what `custom-backend` serves, and parsed
-    back as valid PDF / JPEG / PNG / DOCX.
+- The 25-check matrix returned the same status codes as self-hosted and as `custom-backend`.
+- The rate limiter tripped at attempt 11 with our JSON `429` and `Retry-After: 887`; a locked
+  address presenting the *correct* password still returned `429`; a different address logged in
+  `200` from the same IP; `npm run reset-lockout` restored access.
+- The direct isolation probe — facade bypassed, querying Appwrite with each user's own session —
+  showed Alice and Bob each seeing **2 of 2** documents against **6** for the admin key, with
+  cross-user document reads refused as `document_not_found` and file bytes as
+  `storage_file_not_found`.
+- All six downloaded files were **byte-identical** to what `custom-backend` serves, and parsed
+  back as valid PDF / JPEG / PNG / DOCX.
 
-  Login round-trip was ~1.1 s from this location. That latency is the only observable difference
-  between Cloud and self-hosted, and it changes no status code.
+#### 2. Manual, through the browser client — independently run
+
+Provision and seed ran clean, and the full flow passed in `web/index.html`: login, `GET /me`,
+`GET /files`, own file `200`, another user's file `403`, a nonexistent file `404`, logout, then
+the *same token* returning `401`.
+
+This run is worth recording separately rather than folding into the first, because it demonstrates
+things a `curl` matrix structurally cannot:
+
+- **C1 — the unmodified client actually drives Cloud.** Every automated check above spoke HTTP
+  directly. Only a browser run proves the provided client works against this backend with no
+  changes, which is the constraint `API_CONTRACT.md` exists to satisfy.
+- **ADR-0007 held in the one place it matters.** The client parses every response with
+  `res.json()` and a broken `res.text()` fallback (index.html:118). A single non-JSON body — an
+  Appwrite error leaking through the translation layer, a framework HTML 404 — would have frozen
+  the output pane on a stale result rather than erroring visibly. It did not.
+- **The `token` contract held end to end.** The login response auto-filled the token field
+  (index.html:142-144); had `token` been nested or absent, every subsequent call would have 401'd.
+- **R1.3 was observed the only way the client permits.** The client clears its token field
+  regardless of logout's status, so demonstrating genuine server-side invalidation requires
+  re-presenting the old token by hand. That is what the final `401` is.
+- **It was run by someone other than the author**, on their own machine and project. That removes
+  the failure mode where a setup only works because of undocumented state on the machine it was
+  built on.
+
+Login round-trip was ~1.1 s from this location. That latency is the only observable difference
+between Cloud and self-hosted, and it changes no status code.
+
+#### What is still not verified
+
+Scope discipline matters more here than a clean claim, so:
+
+- **One region only.** All of the above is `sgp`. `cloud.appwrite.io`, `fra.` and `nyc.` were
+  confirmed to answer `/v1/health` with Appwrite's JSON `401` over a clean certificate chain —
+  enough to establish that the endpoint form is right and reachable, not that a full provision,
+  seed and run succeeds there. Nothing in the facade is region-aware, so there is no mechanism by
+  which it *should* differ; that is an argument, not an observation.
+- **One project, one plan.** Quota behaviour at scale is untested: free-tier caps on users,
+  storage and bandwidth, and what Appwrite returns when one is hit. Six seeded files at 1–12 KB
+  and three users are far below any threshold, so this run says nothing about the boundary. If a
+  quota error did surface it would reach the translation layer as an unmapped Appwrite error and
+  become a generic `500` — correct per ADR-0007, but not a helpful message.
+- **No concurrency or sustained load.** Single-user sequential requests throughout. The
+  non-atomic rate-limit increment (ADR-0016) is exactly the kind of thing only concurrency
+  exposes, and it has not been exercised on Cloud.
+- **No session older than the 30-minute expiry** was carried across the boundary on Cloud.
+  ADR-0014's claim that our absolute expiry always binds first relies on Appwrite sessions
+  outliving it — true by documentation and by construction, but not watched to elapse here.
 
 Where the two genuinely can diverge, and none of it touches our routes:
 
