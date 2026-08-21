@@ -78,9 +78,14 @@ not clear it** — the counter is in the database on purpose, so an attacker can
 causing a crash (ADR-0008). Either of these resets it:
 
 ```bash
-npm run seed                                             # also re-seeds
-psql "$DATABASE_URL" -c 'DELETE FROM login_attempts;'    # counter only
+npm run reset-lockout                       # every counter
+npm run reset-lockout -- bob@example.com    # just one address
 ```
+
+`reset-lockout` talks to Postgres through the app's own connection pool, so it does **not** need
+`psql` installed — which it usually is not on a machine running Postgres in Docker. It leaves users
+and files untouched, so it is safe to run mid-review. (`npm run seed` also clears the counters, but
+it re-seeds everything as a side effect.)
 
 The limiter keys on **email** first, so locking out Alice does not block Bob or Carol from the
 same machine — which matters because every account in a local review shares `::1` (ADR-0006).
@@ -91,6 +96,7 @@ same machine — which matters because every account in a local review shares `:
 migrations/001_init.sql     users, files, sessions, login_attempts
 scripts/migrate.js          applies unapplied migrations in a transaction
 scripts/seed.js             the 3 accounts + 6 files from web/seed-data.json
+scripts/reset-lockout.js    the documented lockout escape hatch
 scripts/lib/sample-files.js generates the real PDF/JPEG/PNG/DOCX/TXT blobs
 src/config.js               env parsing; DATABASE_URL has no default, deliberately
 src/db.js                   pg pool, parameterised queries only

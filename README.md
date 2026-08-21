@@ -15,8 +15,8 @@ test client works against either by changing one field. `web/index.html` is **no
 
 | Path | What it holds |
 |---|---|
-| `custom-backend/` | Express + PostgreSQL + argon2id implementation, its migrations, seed and setup docs |
-| `appwrite-backend/` | The Appwrite facade, its provisioning/seed scripts, and the Appwrite-vs-us split |
+| [`custom-backend/`](custom-backend/README.md) | Express + PostgreSQL + argon2id implementation, its migrations, seed and setup docs |
+| [`appwrite-backend/`](appwrite-backend/README.md) | The Appwrite facade, its provisioning/seed scripts, and the Appwrite-vs-us split |
 | `web/` | The provided test client (`index.html`) plus the reference `mock-api.js` and `seed-data.json`. Unmodified. |
 | `TASK.md` | The task text, verbatim, with requirement IDs (R1.1, R3.3 …) added for traceability |
 | `API_CONTRACT.md` | The exact API surface the client expects, derived line-by-line from `index.html` and `mock-api.js`, with every ambiguity flagged |
@@ -65,6 +65,8 @@ npm run dev                   # http://localhost:3000  — leave this window ope
 message rather than starting against a surprise database. `.env.example` ships a value matching
 the bundled `docker-compose.yml`, so the copy above is enough. The app depends only on the
 connection string; any reachable Postgres 13+ works, and the compose file is a convenience.
+
+→ **Detail, layout and troubleshooting: [`custom-backend/README.md`](custom-backend/README.md)**
 
 ## 1b. appwrite-backend (port 3001) — Appwrite Cloud
 
@@ -142,6 +144,10 @@ npm run dev
 ```
 
 `npm run bootstrap` needs no console clicking at all, which is why this path is kept.
+
+→ **Detail for both Appwrite paths — the full console walkthrough, the scope list, the layout, and
+the Appwrite-versus-us isolation split:
+[`appwrite-backend/README.md`](appwrite-backend/README.md)**
 
 ## Environment variable precedence — read this before debugging config
 
@@ -386,6 +392,9 @@ confidentiality slightly, on purpose**, to satisfy R3.3. That is the one place t
 instincts and the requirement actively disagree, and it is the most interesting thing I found
 building this. Everything else in the right-hand table is contract translation, not security I had
 to invent.
+
+The same split, with the exact Appwrite error types and the measurements behind each row, is in
+[`appwrite-backend/README.md`](appwrite-backend/README.md#what-appwrite-enforces-versus-what-we-enforce).
 
 ## 4.5 What I would improve given more time
 
