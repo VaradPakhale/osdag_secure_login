@@ -1,0 +1,31 @@
+{
+  "name": "osdag-secure-login-appwrite-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Appwrite-backed facade exposing the same API as custom-backend (see ../DECISIONS.md ADR-0002)",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "provision": "node scripts/provision.js",
+    "seed": "node scripts/seed.js",
+    "setup": "npm run provision && npm run seed",
+    "bootstrap": "node scripts/bootstrap-project.js",
+    "reset-lockout": "node scripts/reset-lockout.js"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "node-appwrite": "^14.1.0"
+  },
+  "devDependencies": {
+    "jpeg-js": "^0.4.4",
+    "jszip": "^3.10.1",
+    "pdf-lib": "^1.17.1",
+    "pngjs": "^7.0.0"
+  }
+}

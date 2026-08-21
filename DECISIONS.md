@@ -897,3 +897,174 @@ downloads are byte-identical to what is on disk.
 - Generated files are ~1–12 KB rather than the declared 5 KB–512 KB, so nothing here exercises a
   large-file path. Streaming is used regardless, so the shape does not change if real uploads
   arrive later.
+
+---
+---
+
+# Decisions taken while building the Appwrite backend
+
+ADR-0002 fixed the *shape* (a server-side facade). These are the choices that implementation
+forced.
+
+---
+
+## ADR-0014 — The facade wraps an Appwrite **session secret**, not a JWT
+
+**Status:** Accepted · 2026-08-21
+**Refines:** [ADR-0002](#adr-0002--appwrite-integration-shape-server-side-facade-not-a-browser-adapter)
+**Satisfies:** R1.2, R1.3
+
+### Question
+
+ADR-0002 assumed the facade would mint an Appwrite **JWT** per user, and flagged the consequence
+as a cost: *"Appwrite JWTs are short-lived (~15 min, shorter than our 30-minute session), so the
+facade must hold the session id and re-mint a JWT when one expires."* Building it exposed a
+better option.
+
+### Decision
+
+`POST /login` calls `account.createEmailPasswordSession()` and stores **the session secret**,
+encrypted, against our own opaque token. Every data call builds a client with
+`.setSession(secret)`. No JWT is minted on the request path.
+
+### Reasoning
+
+**The expiry gap ADR-0002 worried about is an artifact of choosing JWTs, not a fact about
+Appwrite.** An Appwrite JWT expires in ~15 minutes; the underlying *session* does not — it
+outlives our own 30-minute window comfortably. Wrapping the session secret means our absolute
+expiry is always the binding one, so there is no window in which our token is still valid while
+the credential behind it has died of old age. The re-mint machinery ADR-0002 budgeted for turns
+out to be unnecessary, which is the cheapest way to handle a failure mode: arrange for it not to
+exist.
+
+An Appwrite session can still die *early* — revoked in the console, invalidated by a password
+change, or wiped by a re-seed. So the gap is handled, just not by re-minting on a timer:
+
+- `resolveSession()` decrypts and returns the secret; if Appwrite later rejects it mid-request,
+  `isSessionDead()` recognises the 401 family and the route returns our standard
+  `401 {"error":"Not authenticated"}` rather than a 500.
+- When **our** expiry fires first, `resolveSession()` tears down the Appwrite session too, rather
+  than leaving it live behind a token that no longer works.
+
+**Why this beats the alternatives.** Storing the session *id* alone and re-minting a JWT per
+request adds a network round-trip to every call and reintroduces the 15-minute cliff. Caching
+JWTs adds a second expiry to reason about. Holding the secret is one credential with one expiry —
+ours.
+
+The client contract is untouched either way: index.html sees a 43-character opaque string in
+`body.token`, exactly as it does from custom-backend, and cannot tell the backends apart.
+
+### Cost
+
+- **We hold a live, replayable credential at rest.** A JWT would at least have expired on its own
+  after 15 minutes; a session secret stays useful until revoked. This is the direct reason for
+  ADR-0015, and the two must be read together.
+- Session secrets are opaque to us, so the facade cannot inspect claims (roles, expiry) without
+  asking Appwrite. Nothing here needs to.
+- A session revoked in the Appwrite console leaves our record behind until the next request
+  touches it or the purge timer runs. It fails closed — the record resolves, the Appwrite call
+  401s, the client gets a 401 — but the row lingers.
+- Verified: after `POST /logout`, using the stored secret **directly against Appwrite** with the
+  facade out of the picture returns `code=401 type=general_unauthorized_scope`.
+
+---
+
+## ADR-0015 — Appwrite session secrets are encrypted at rest (AES-256-GCM)
+
+**Status:** Accepted · 2026-08-21
+**Satisfies:** R5.1's reasoning, applied to session credentials
+
+### Question
+
+The facade must store the Appwrite session secret (ADR-0014) in a collection its API key can
+read. In what form?
+
+### Decision
+
+AES-256-GCM, keyed by `SESSION_ENCRYPTION_KEY` (32 bytes, base64, required — the server refuses
+to start without it), stored as `iv.ciphertext.tag`. Our own opaque token is stored **hashed**,
+not encrypted, exactly as in custom-backend.
+
+The asymmetry is the point:
+
+| Credential | Form at rest | Why |
+|---|---|---|
+| our opaque token | SHA-256 | we only ever need to *recognise* it |
+| Appwrite session secret | AES-256-GCM | we need to *use* it to call Appwrite |
+
+Hashing is preferable wherever it works, because a hash cannot be reversed by anyone, ourselves
+included. It does not work here — a hash of the Appwrite secret is useless for authenticating to
+Appwrite — so encryption is the weaker tool we are forced into.
+
+### Reasoning
+
+Without this, a leaked dump of `facade_sessions` is a list of live credentials: each secret is
+directly replayable against Appwrite as that user, with no cracking step in between. That is a
+strictly worse failure than leaking password hashes, which at least cost an attacker compute. GCM
+is authenticated, so a tampered ciphertext fails to decrypt rather than silently yielding garbage.
+
+The document id is the first 32 hex chars of SHA-256(token), because Appwrite ids cap at 36
+characters and a 64-char digest does not fit. The **full** digest is stored as an attribute and
+compared with `crypto.timingSafeEqual()` on every read, so the truncated id is a lookup key while
+the full hash is the security boundary. 128 bits is far beyond collision range for a lookup key
+anyway; this removes the need to argue about it at all.
+
+### Cost
+
+- **A new secret to manage.** `SESSION_ENCRYPTION_KEY` must be backed up and rotated; losing it
+  invalidates every live session (recoverable — users log in again). There is no key-versioning
+  scheme, so rotation invalidates everything at once. Fine at this scope, sloppy for production,
+  and worth a `keyId` prefix if it ever mattered.
+- **The key sits next to the data it protects** in a single-process deployment, so this defends
+  against a leaked database, not a compromised host. Naming that limit matters more than the
+  mitigation does.
+- Encrypt/decrypt on every authenticated request. Microseconds, against a network hop.
+
+---
+
+## ADR-0016 — Facade bookkeeping lives in Appwrite, locked to the API key
+
+**Status:** Accepted · 2026-08-21
+**Satisfies:** R5.3, R1.3
+
+### Question
+
+The facade needs two pieces of state Appwrite does not provide: its own session records, and the
+rate-limit counters R5.3 requires. Where do they live?
+
+### Decision
+
+Two Appwrite collections — `facade_sessions` and `facade_login_attempts` — created with **no
+permissions for any role** and `documentSecurity: false`. Only the API key can read or write
+them. No user session can reach them, including its own.
+
+### Reasoning
+
+The alternatives were an in-memory Map or a second database. In-memory loses both properties
+ADR-0006 and ADR-0008 deliberately paid for: a restart would shed every lockout, which is exactly
+the escape hatch an attacker wants, and it would drop live sessions on every deploy. A separate
+Postgres would make the "managed backend" quietly depend on the unmanaged one, undermining the
+comparison the whole task is built around.
+
+Using Appwrite for the facade's own bookkeeping keeps the dependency list honest: this backend
+needs Appwrite and nothing else.
+
+**These collections are the one place the admin key touches non-provisioning data at runtime, and
+that is deliberate rather than an erosion of ADR-0002.** They hold no user-owned data — no
+profile, no file, no document a user could claim. They are the facade's own tables, and locking
+them to zero roles means the permission model still states the intent: nobody but the server.
+
+### Cost
+
+- **The rate-limit increment is not atomic.** custom-backend does it in one
+  `INSERT ... ON CONFLICT DO UPDATE`; Appwrite has no upsert-with-expression, so this is
+  read-then-write, and two simultaneous failures can lose an increment. The effect is that an
+  attacker might occasionally get one extra attempt out of ten — the control degrades slightly,
+  it does not fail open. Documented rather than hidden, because it is a real behavioural
+  difference between the two implementations.
+- Every authenticated request costs an Appwrite round-trip to resolve the session, where
+  custom-backend does one indexed local query. Noticeably slower; irrelevant at review scale.
+- If Appwrite is down, the facade cannot even tell you that you are rate-limited. Acceptable — it
+  cannot serve anything else either.
+- `npm run seed` deletes and recreates users, so any live facade session points at a user that no
+  longer exists. The seed clears both collections for exactly this reason.

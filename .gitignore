@@ -60,3 +60,6 @@ desktop.ini
 # Claude Code local state (keep CLAUDE.md itself — that IS committed)
 .claude/
 INTERVIEW_NOTES.md
+
+# Appwrite backend local secrets (written by npm run bootstrap)
+.env.local
