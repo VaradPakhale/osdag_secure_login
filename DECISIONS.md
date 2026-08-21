@@ -1145,7 +1145,8 @@ For the seven routes this facade exposes: **nothing that we could detect.** The 
 provisioning script and the same seed run against either, and the same 25-check matrix returns
 identical status codes.
 
-How that was verified is worth being precise about, because it is partial:
+How that was verified, in the order it happened — the last bullet is the one that actually settles
+it, and the first two are recorded because they were what the claim rested on before it:
 
 - **Endpoint reachability and TLS** were checked directly against Cloud — `cloud.appwrite.io`,
   `fra.cloud.appwrite.io` and `nyc.cloud.appwrite.io` all answer `/v1/health` with Appwrite's JSON
@@ -1154,10 +1155,25 @@ How that was verified is worth being precise about, because it is partial:
 - **The Cloud code path** — credentials supplied by hand in `.env`, no bootstrap artifacts present,
   a fresh unprovisioned project — was run end to end against a real Appwrite server: provision,
   seed, all 25 checks, rate limiter, and the direct isolation probe.
-- **Cloud's hosted service itself was not exercised**, because that requires an account this
-  environment cannot create. The claim "the facade works on Cloud" therefore rests on the API
-  being the same API, which is Appwrite's own compatibility guarantee, not on an observed run.
-  Stated plainly rather than implied.
+- **Appwrite Cloud itself was subsequently exercised, end to end.** An earlier draft of this ADR
+  recorded that it had not been, because no Cloud account was available at the time. Once real
+  Cloud credentials were in place — a project on the **sgp** region,
+  `https://sgp.cloud.appwrite.io/v1` — the whole verification was re-run against the hosted
+  service. All of the following is against real Cloud, not self-hosted:
+
+  - the 25-check matrix returned the same status codes as self-hosted and as `custom-backend`;
+  - the rate limiter tripped at attempt 11 with our JSON `429` and `Retry-After: 887`; a locked
+    address plus the *correct* password still returned `429`, another address logged in `200`
+    from the same IP, and `npm run reset-lockout` restored access;
+  - the direct isolation probe (facade bypassed, querying Appwrite with each user's own session)
+    showed Alice and Bob each seeing **2 of 2** documents against **6** for the admin key, with
+    cross-user document reads refused as `document_not_found` and file bytes as
+    `storage_file_not_found`;
+  - all six downloaded files were **byte-identical** to what `custom-backend` serves, and parsed
+    back as valid PDF / JPEG / PNG / DOCX.
+
+  Login round-trip was ~1.1 s from this location. That latency is the only observable difference
+  between Cloud and self-hosted, and it changes no status code.
 
 Where the two genuinely can diverge, and none of it touches our routes:
 
